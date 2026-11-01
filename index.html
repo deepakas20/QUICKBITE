@@ -19,8 +19,10 @@
         .feature-box h3 { color: #1F2937; margin-bottom: 8px; font-size: 1.1rem; }
         .feature-box p { color: #6B7280; font-size: 0.95rem; }
         .tech-tag { background: #E0E7FF; color: #4338CA; padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; display: inline-block; margin: 4px; }
-        .btn { display: inline-block; background: #1F2937; color: white; padding: 12px 28px; border-radius: 10px; text-decoration: none; font-weight: 600; margin-top: 15px; transition: 0.3s; }
-        .btn:hover { background: #111827; }
+        .btn-group { display: flex; gap: 15px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+        .btn { display: inline-block; background: #1F2937; color: white; padding: 12px 28px; border-radius: 10px; text-decoration: none; font-weight: 600; transition: 0.3s; }
+        .btn-accent { background: #F97316; }
+        .btn:hover { opacity: 0.9; transform: translateY(-2px); }
         footer { text-align: center; padding: 20px; color: #6B7280; font-size: 0.9rem; }
     </style>
 </head>
@@ -71,13 +73,16 @@
             </div>
         </div>
 
-        <!-- GitHub Action -->
+        <!-- GitHub & Site Actions -->
         <div class="card" style="text-align: center;">
-            <h2>💻 Source Code & Execution</h2>
+            <h2>🌐 QuickBite Project Links</h2>
             <p style="color: #4B5563; margin-top: 8px;">
-                This is a native Java desktop application. View full source code and setup instructions on GitHub.
+                Access the source code and official project repository directly on GitHub.
             </p>
-            <a href="https://github.com/deepakas20/QUICKBITE" class="btn">View Source Code on GitHub</a>
+            <div class="btn-group">
+                <a href="https://github.com/deepakas20/QUICKBITE" target="_blank" class="btn">📂 GitHub Repository</a>
+                <a href="https://deepakas20.github.io/QUICKBITE/" class="btn btn-accent">🌐 Live Project Showcase</a>
+            </div>
         </div>
     </div>
 
