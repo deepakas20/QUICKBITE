@@ -1,0 +1,1038 @@
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import javax.swing.border.LineBorder;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.JTableHeader;
+import javax.swing.table.TableCellRenderer;
+import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.function.IntConsumer;
+import java.util.stream.Collectors;
+
+/* ===================== BACKGROUND KITCHEN THREAD ===================== */
+class OrderProcessor extends Thread {
+    private final String orderId;
+    private final int delayTime;
+
+    public OrderProcessor(String orderId, int delayTime) {
+        this.orderId = orderId;
+        this.delayTime = delayTime;
+    }
+
+    @Override
+    public void run() {
+        try {
+            Thread.sleep(delayTime);
+            try (Connection conn = Main.db();
+                 PreparedStatement pstmt = conn.prepareStatement("UPDATE Orders SET status = 'Ready' WHERE orderId = ?")) {
+                pstmt.setString(1, orderId);
+                pstmt.executeUpdate();
+            }
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null,
+                    "🔔 DING! Token " + orderId + " is READY!\nPlease collect your food.",
+                    "Order Ready", JOptionPane.INFORMATION_MESSAGE));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+public class Main {
+    static final String URL = "jdbc:mysql://localhost:3306/quickbite_db";
+    static final String USER = "root";
+    static final String PASS = "root123";
+
+    // ---------- Theme ----------
+    static final Color SIDEBAR = new Color(0x1F2937);
+    static final Color BG      = new Color(0xF4F5F7);
+    static final Color TEXT    = new Color(0x111827);
+    static final Color MUTED   = new Color(0x6B7280);
+    static final Color ORANGE  = new Color(0xF97316);
+    static final Color ROSE    = new Color(0xE11D48);
+    static final Color INDIGO  = new Color(0x6366F1);
+    static final Color GREEN   = new Color(0x10B981);
+    static final Color RED     = new Color(0xEF4444);
+    static final Color AMBER   = new Color(0xD97706);
+    static final int B = Font.BOLD, P = Font.PLAIN;
+
+    static Connection db() throws SQLException {
+        return DriverManager.getConnection(URL, USER, PASS);
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(Main::createLoginWindow);
+    }
+
+    /* ===================== SMALL HELPERS ===================== */
+    static Font font(int style, int size) { return new Font("Segoe UI", style, size); }
+
+    static EmptyBorder pad(int t, int l, int b, int r) { return new EmptyBorder(t, l, b, r); }
+
+    static JLabel label(String text, int style, int size, Color c) {
+        JLabel l = new JLabel(text);
+        l.setFont(font(style, size));
+        l.setForeground(c);
+        return l;
+    }
+
+    static Color blend(Color c, double t) {
+        int r = (int) (c.getRed() + (255 - c.getRed()) * (1 - t));
+        int g = (int) (c.getGreen() + (255 - c.getGreen()) * (1 - t));
+        int b = (int) (c.getBlue() + (255 - c.getBlue()) * (1 - t));
+        return new Color(r, g, b);
+    }
+
+    static String money(double d) { return String.format(Locale.US, "%.2f", d); }
+
+    static String count(String sql) {
+        try (Connection c = db(); Statement s = c.createStatement(); ResultSet rs = s.executeQuery(sql)) {
+            rs.next();
+            return String.valueOf(rs.getInt(1));
+        } catch (SQLException e) {
+            return "N/A";
+        }
+    }
+
+    static void warn(String msg) {
+        JOptionPane.showMessageDialog(null, msg, "QuickBite", JOptionPane.WARNING_MESSAGE);
+    }
+
+    static void say(JLabel l, String text, boolean ok) {
+        l.setForeground(ok ? GREEN : RED);
+        l.setText(text);
+    }
+
+    static JTextField input() {
+        JTextField f = new JTextField();
+        f.setFont(font(P, 14));
+        f.setBorder(javax.swing.BorderFactory.createCompoundBorder(
+                new LineBorder(new Color(0xD1D5DB), 1, true), pad(9, 12, 9, 12)));
+        f.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
+        f.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return f;
+    }
+
+    static JLabel caption(String t) {
+        JLabel l = label(t, B, 13, MUTED);
+        l.setAlignmentX(Component.LEFT_ALIGNMENT);
+        l.setBorder(pad(0, 0, 6, 0));
+        return l;
+    }
+
+    /* ===================== CUSTOM COMPONENTS ===================== */
+    static class RoundedButton extends JButton {
+        private final Color base;
+        private boolean over;
+
+        RoundedButton(String text, Color bg, Color fg) {
+            super(text);
+            this.base = bg;
+            setFont(font(B, 14));
+            setForeground(fg);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setOpaque(false);
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+            setBorder(pad(12, 20, 12, 20));
+            addMouseListener(new MouseAdapter() {
+                @Override public void mouseEntered(MouseEvent e) { over = true; repaint(); }
+                @Override public void mouseExited(MouseEvent e) { over = false; repaint(); }
+            });
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(over ? base.darker() : base);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 14, 14);
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    static class NavButton extends JButton {
+        private final Color accent;
+        private boolean active, over;
+
+        NavButton(String text, Color accent) {
+            super(text);
+            this.accent = accent;
+            setHorizontalAlignment(SwingConstants.LEFT);
+            setFont(font(B, 14));
+            setForeground(new Color(0xD1D5DB));
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setOpaque(false);
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+            setBorder(pad(12, 16, 12, 16));
+            setMaximumSize(new Dimension(Integer.MAX_VALUE, 46));
+            setAlignmentX(Component.LEFT_ALIGNMENT);
+            addMouseListener(new MouseAdapter() {
+                @Override public void mouseEntered(MouseEvent e) { over = true; repaint(); }
+                @Override public void mouseExited(MouseEvent e) { over = false; repaint(); }
+            });
+        }
+
+        void setActive(boolean a) {
+            active = a;
+            setForeground(a ? Color.WHITE : new Color(0xD1D5DB));
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            if (active) {
+                g2.setColor(accent);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+            } else if (over) {
+                g2.setColor(new Color(255, 255, 255, 25));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    static class GradientPanel extends JPanel {
+        private final Color from, to;
+
+        GradientPanel(Color from, Color to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setPaint(new GradientPaint(0, 0, from, getWidth(), getHeight(), to));
+            g2.fillRect(0, 0, getWidth(), getHeight());
+            g2.dispose();
+        }
+    }
+
+    static class Card extends JPanel {
+        Card(LayoutManager lm) {
+            super(lm);
+            setOpaque(false);
+            setBorder(pad(18, 20, 22, 24));
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int w = getWidth() - 4, h = getHeight() - 4;
+            g2.setColor(new Color(0, 0, 0, 18));
+            g2.fillRoundRect(2, 3, w, h, 18, 18);
+            g2.setColor(Color.WHITE);
+            g2.fillRoundRect(0, 0, w, h, 18, 18);
+            g2.dispose();
+        }
+    }
+
+    static class MetricCard extends Card {
+        final JLabel value;
+
+        MetricCard(String title, String v, Color accent) {
+            super(null);
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            JPanel bar = new JPanel();
+            bar.setBackground(accent);
+            bar.setPreferredSize(new Dimension(36, 4));
+            bar.setMaximumSize(new Dimension(36, 4));
+            bar.setAlignmentX(Component.LEFT_ALIGNMENT);
+            JLabel t = label(title, B, 13, MUTED);
+            t.setAlignmentX(Component.LEFT_ALIGNMENT);
+            value = label(v, B, 28, TEXT);
+            value.setAlignmentX(Component.LEFT_ALIGNMENT);
+            add(bar);
+            add(Box.createVerticalStrut(12));
+            add(t);
+            add(Box.createVerticalStrut(4));
+            add(value);
+        }
+    }
+
+    static class BarChart extends JComponent {
+        private List<String> labels = new ArrayList<>();
+        private List<Integer> vals = new ArrayList<>();
+        private final Color accent;
+
+        BarChart(Color accent) { this.accent = accent; }
+
+        void setData(List<String> l, List<Integer> v) {
+            labels = l;
+            vals = v;
+            revalidate();
+            repaint();
+        }
+
+        @Override
+        public Dimension getPreferredSize() {
+            return new Dimension(400, Math.max(60, vals.size() * 36));
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            if (vals.isEmpty()) {
+                g2.setFont(font(P, 14));
+                g2.setColor(MUTED);
+                g2.drawString("No menu yet. Load the default menu from Setup Menu & Stock.", 4, 24);
+                g2.dispose();
+                return;
+            }
+            int max = 1;
+            for (int v : vals) max = Math.max(max, v);
+            int labelW = 150, valueW = 60, rowH = 36, barH = 16;
+            int area = Math.max(60, getWidth() - labelW - valueW);
+            for (int i = 0; i < vals.size(); i++) {
+                int y = i * rowH, v = vals.get(i);
+                int barY = y + (rowH - barH) / 2;
+                g2.setFont(font(P, 13));
+                g2.setColor(TEXT);
+                FontMetrics fm = g2.getFontMetrics();
+                int ty = y + (rowH + fm.getAscent() - fm.getDescent()) / 2;
+                g2.drawString(labels.get(i), 0, ty);
+                g2.setColor(new Color(0xE5E7EB));
+                g2.fillRoundRect(labelW, barY, area, barH, barH, barH);
+                int bw = (int) (area * (v / (double) max));
+                g2.setColor(v <= 5 ? RED : accent);
+                g2.fillRoundRect(labelW, barY, Math.max(bw, v > 0 ? barH : 0), barH, barH, barH);
+                g2.setColor(v <= 5 ? RED : MUTED);
+                g2.setFont(font(B, 13));
+                g2.drawString(String.valueOf(v), labelW + area + 12, ty);
+            }
+            g2.dispose();
+        }
+    }
+
+    static class Page extends JPanel {
+        Runnable onShow = () -> { };
+
+        Page() {
+            super(new BorderLayout(0, 20));
+            setOpaque(false);
+        }
+    }
+
+    static class CartLine {
+        final String id, name;
+        final double price;
+        int qty;
+
+        CartLine(String id, String name, double price, int qty) {
+            this.id = id;
+            this.name = name;
+            this.price = price;
+            this.qty = qty;
+        }
+    }
+
+    static Page page(String title, String sub, JComponent east) {
+        Page p = new Page();
+        JPanel h = new JPanel(new BorderLayout());
+        h.setOpaque(false);
+        JPanel t = new JPanel(new GridLayout(2, 1, 0, 2));
+        t.setOpaque(false);
+        t.add(label(title, B, 28, TEXT));
+        t.add(label(sub, P, 14, MUTED));
+        h.add(t, BorderLayout.WEST);
+        if (east != null) h.add(east, BorderLayout.EAST);
+        p.add(h, BorderLayout.NORTH);
+        return p;
+    }
+
+    static JPanel row(int cols) {
+        JPanel p = new JPanel(new GridLayout(1, cols, 18, 0));
+        p.setOpaque(false);
+        return p;
+    }
+
+    /* ===================== TABLE STYLING ===================== */
+    static DefaultTableModel model(String... cols) {
+        return new DefaultTableModel(cols, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+    }
+
+    static JTable table(DefaultTableModel m, Color accent) {
+        JTable t = new JTable(m) {
+            @Override
+            public Component prepareRenderer(TableCellRenderer r, int row, int col) {
+                Component c = super.prepareRenderer(r, row, col);
+                ((JComponent) c).setBorder(pad(0, 12, 0, 12));
+                c.setFont(font(P, 14));
+                c.setForeground(TEXT);
+                c.setBackground(isRowSelected(row) ? blend(accent, 0.2)
+                        : (row % 2 == 0 ? Color.WHITE : new Color(0xF9FAFB)));
+                Object v = getValueAt(row, col);
+                String s = v == null ? "" : v.toString();
+                if (s.equals("Ready")) { c.setForeground(GREEN); c.setFont(font(B, 14)); }
+                else if (s.equals("Pending")) { c.setForeground(AMBER); c.setFont(font(B, 14)); }
+                else if (s.equals("OUT OF STOCK")) { c.setForeground(RED); c.setFont(font(B, 14)); }
+                else if (getColumnName(col).startsWith("Stock") && s.matches("\\d+") && Integer.parseInt(s) <= 5) {
+                    c.setForeground(AMBER);
+                    c.setFont(font(B, 14));
+                }
+                return c;
+            }
+        };
+        t.setRowHeight(38);
+        t.setShowGrid(false);
+        t.setIntercellSpacing(new Dimension(0, 0));
+        t.setFillsViewportHeight(true);
+        t.setSelectionBackground(blend(accent, 0.2));
+
+        JTableHeader h = t.getTableHeader();
+        h.setReorderingAllowed(false);
+        h.setPreferredSize(new Dimension(0, 40));
+        h.setDefaultRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable tb, Object v, boolean s, boolean f, int r, int c) {
+                JLabel l = (JLabel) super.getTableCellRendererComponent(tb, v, false, false, r, c);
+                l.setOpaque(true);
+                l.setBackground(accent);
+                l.setForeground(Color.WHITE);
+                l.setFont(font(B, 13));
+                l.setBorder(pad(0, 12, 0, 12));
+                return l;
+            }
+        });
+        return t;
+    }
+
+    static JScrollPane scroll(Component c) {
+        JScrollPane sp = new JScrollPane(c);
+        sp.setBorder(null);
+        sp.getViewport().setBackground(Color.WHITE);
+        return sp;
+    }
+
+    static boolean loadMenu(DefaultTableModel m) {
+        m.setRowCount(0);
+        try (Connection c = db(); Statement s = c.createStatement(); ResultSet rs = s.executeQuery("SELECT * FROM MenuItems")) {
+            while (rs.next()) {
+                int st = rs.getInt("stock");
+                m.addRow(new Object[]{rs.getString("itemId"), rs.getString("name"),
+                        money(rs.getDouble("price")), st > 0 ? String.valueOf(st) : "OUT OF STOCK"});
+            }
+            return true;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    /* ===================== LOGIN WINDOW ===================== */
+    private static void createLoginWindow() {
+        JFrame frame = new JFrame("QuickBite - Smart Canteen Management");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(980, 580);
+
+        JPanel root = new JPanel(new GridLayout(1, 2));
+
+        // Left: brand panel
+        GradientPanel left = new GradientPanel(ORANGE, ROSE);
+        left.setLayout(new GridBagLayout());
+        JPanel brand = new JPanel();
+        brand.setOpaque(false);
+        brand.setLayout(new BoxLayout(brand, BoxLayout.Y_AXIS));
+        JLabel logo = label("🍔", P, 64, Color.WHITE);
+        JLabel name = label("QuickBite", B, 42, Color.WHITE);
+        JLabel tag = label("<html>Skip the queue.<br>Pre-order, track your token and<br>pick up fresh food when it's ready.</html>",
+                P, 16, new Color(255, 255, 255, 230));
+        JLabel f1 = label("✓  Live stock updates", B, 14, Color.WHITE);
+        JLabel f2 = label("✓  Token tracking", B, 14, Color.WHITE);
+        JLabel f3 = label("✓  Instant ready alerts", B, 14, Color.WHITE);
+        for (JComponent c : new JComponent[]{logo, name, tag, f1, f2, f3}) c.setAlignmentX(Component.LEFT_ALIGNMENT);
+        brand.add(logo);
+        brand.add(name);
+        brand.add(Box.createVerticalStrut(10));
+        brand.add(tag);
+        brand.add(Box.createVerticalStrut(28));
+        brand.add(f1);
+        brand.add(Box.createVerticalStrut(8));
+        brand.add(f2);
+        brand.add(Box.createVerticalStrut(8));
+        brand.add(f3);
+        left.add(brand);
+
+        // Right: login actions
+        JPanel right = new JPanel(new GridBagLayout());
+        right.setBackground(Color.WHITE);
+        JPanel box = new JPanel();
+        box.setOpaque(false);
+        box.setLayout(new BoxLayout(box, BoxLayout.Y_AXIS));
+        JLabel hello = label("Welcome 👋", B, 30, TEXT);
+        JLabel sub = label("Campus order & inventory management", P, 14, MUTED);
+        RoundedButton studentBtn = new RoundedButton("🎓  Continue as Student", ORANGE, Color.WHITE);
+        RoundedButton staffBtn = new RoundedButton("👨‍🍳  Continue as Staff", SIDEBAR, Color.WHITE);
+        for (JComponent c : new JComponent[]{hello, sub, studentBtn, staffBtn}) c.setAlignmentX(Component.LEFT_ALIGNMENT);
+        studentBtn.setMaximumSize(new Dimension(320, 52));
+        staffBtn.setMaximumSize(new Dimension(320, 52));
+        box.add(hello);
+        box.add(Box.createVerticalStrut(6));
+        box.add(sub);
+        box.add(Box.createVerticalStrut(36));
+        box.add(studentBtn);
+        box.add(Box.createVerticalStrut(14));
+        box.add(staffBtn);
+        right.add(box);
+
+        root.add(left);
+        root.add(right);
+        frame.add(root);
+
+        studentBtn.addActionListener(e -> { frame.dispose(); openStudentDashboard(); });
+        staffBtn.addActionListener(e -> { frame.dispose(); openStaffDashboard(); });
+
+        frame.setLocationRelativeTo(null);
+        frame.setVisible(true);
+    }
+
+    /* ===================== DASHBOARD SHELL ===================== */
+    private static void openShell(String winTitle, String portal, Color accent, String[] names, Page[] pages) {
+        JFrame frame = new JFrame(winTitle);
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setMinimumSize(new Dimension(1000, 640));
+        frame.setSize(1200, 720);
+        frame.setLayout(new BorderLayout());
+
+        JPanel sidebar = new JPanel();
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setBackground(SIDEBAR);
+        sidebar.setBorder(pad(26, 16, 22, 16));
+        sidebar.setPreferredSize(new Dimension(260, 0));
+
+        JLabel brand = label("🍔 QuickBite", B, 24, Color.WHITE);
+        JLabel tag = label(portal, B, 13, blend(accent, 0.75));
+        brand.setAlignmentX(Component.LEFT_ALIGNMENT);
+        tag.setAlignmentX(Component.LEFT_ALIGNMENT);
+        brand.setBorder(pad(0, 6, 0, 0));
+        tag.setBorder(pad(0, 8, 0, 0));
+        sidebar.add(brand);
+        sidebar.add(Box.createVerticalStrut(2));
+        sidebar.add(tag);
+        sidebar.add(Box.createVerticalStrut(28));
+
+        CardLayout cl = new CardLayout();
+        JPanel content = new JPanel(cl);
+        content.setBackground(BG);
+
+        NavButton[] navs = new NavButton[names.length];
+        IntConsumer[] select = new IntConsumer[1];
+        select[0] = k -> {
+            for (int j = 0; j < navs.length; j++) navs[j].setActive(j == k);
+            cl.show(content, String.valueOf(k));
+            pages[k].onShow.run();
+        };
+
+        for (int i = 0; i < names.length; i++) {
+            final int idx = i;
+            navs[i] = new NavButton(names[i], accent);
+            navs[i].addActionListener(e -> select[0].accept(idx));
+            sidebar.add(navs[i]);
+            sidebar.add(Box.createVerticalStrut(6));
+
+            JPanel holder = new JPanel(new BorderLayout());
+            holder.setBackground(BG);
+            holder.setBorder(pad(28, 32, 28, 32));
+            holder.add(pages[i]);
+            content.add(holder, String.valueOf(i));
+        }
+
+        sidebar.add(Box.createVerticalGlue());
+        RoundedButton logout = new RoundedButton("🚪  Logout", RED, Color.WHITE);
+        logout.setAlignmentX(Component.LEFT_ALIGNMENT);
+        logout.setMaximumSize(new Dimension(Integer.MAX_VALUE, 46));
+        logout.addActionListener(e -> { frame.dispose(); createLoginWindow(); });
+        sidebar.add(logout);
+
+        frame.add(sidebar, BorderLayout.WEST);
+        frame.add(content, BorderLayout.CENTER);
+        frame.setLocationRelativeTo(null);
+        frame.setExtendedState(JFrame.MAXIMIZED_BOTH);
+        select[0].accept(0);
+        frame.setVisible(true);
+    }
+
+    /* ===================== STUDENT DASHBOARD ===================== */
+    private static void openStudentDashboard() {
+        Page[] pages = {studentHome(), studentRegister(), studentMenu(), studentOrder(), studentTrack()};
+        openShell("Student Dashboard - QuickBite", "Student portal", ORANGE,
+                new String[]{"🏠  Home", "📝  Register", "📋  Menu & Stock", "🛒  Pre-order Food", "🔍  Track Token"}, pages);
+    }
+
+    private static Page studentHome() {
+        Page p = page("Welcome back 👋", "Order your favourite food and skip the queue.", null);
+        MetricCard m1 = new MetricCard("System status", "Active", GREEN);
+        MetricCard m2 = new MetricCard("Items in stock", "-", ORANGE);
+        MetricCard m3 = new MetricCard("Preparation time", "40 secs", AMBER);
+        JPanel cards = row(3);
+        cards.add(m1);
+        cards.add(m2);
+        cards.add(m3);
+
+        Card how = new Card(new BorderLayout());
+        how.add(new JLabel("<html><div style='font-family:Segoe UI;color:#111827'>"
+                + "<h2 style='margin:0 0 10px 0'>How it works</h2>"
+                + "<p style='font-size:13px;color:#4B5563'>1. Register with your student ID (first time only).<br><br>"
+                + "2. Pick items in <b>Pre-order Food</b> and place your order.<br><br>"
+                + "3. Note your token. Use <b>Track Token</b> to check progress.<br><br>"
+                + "4. A bell rings when your food is ready. Collect it from the counter.</p></div></html>"));
+
+        JPanel body = new JPanel(new BorderLayout(0, 20));
+        body.setOpaque(false);
+        body.add(cards, BorderLayout.NORTH);
+        body.add(how, BorderLayout.CENTER);
+        p.add(body, BorderLayout.CENTER);
+
+        p.onShow = () -> {
+            String n = count("SELECT COUNT(*) FROM MenuItems WHERE stock > 0");
+            m2.value.setText(n.equals("N/A") ? "N/A" : n + " items");
+        };
+        return p;
+    }
+
+    private static Page studentRegister() {
+        Page p = page("Register", "Create your student account to start ordering.", null);
+        Card card = new Card(null);
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setPreferredSize(new Dimension(460, 340));
+
+        JTextField idF = input(), nameF = input();
+        JLabel msg = label(" ", B, 13, GREEN);
+        msg.setAlignmentX(Component.LEFT_ALIGNMENT);
+        RoundedButton btn = new RoundedButton("Register student", ORANGE, Color.WHITE);
+        btn.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        card.add(caption("Student ID (e.g. S101)"));
+        card.add(idF);
+        card.add(Box.createVerticalStrut(16));
+        card.add(caption("Full name"));
+        card.add(nameF);
+        card.add(Box.createVerticalStrut(22));
+        card.add(btn);
+        card.add(Box.createVerticalStrut(14));
+        card.add(msg);
+
+        btn.addActionListener(e -> {
+            String id = idF.getText().trim(), name = nameF.getText().trim();
+            if (id.isEmpty() || name.isEmpty()) { say(msg, "Enter both your ID and name.", false); return; }
+            try (Connection conn = db();
+                 PreparedStatement ps = conn.prepareStatement("INSERT INTO Users (id, name, role) VALUES (?, ?, 'Student')")) {
+                ps.setString(1, id);
+                ps.setString(2, name);
+                ps.executeUpdate();
+                say(msg, "✅ Registered " + name + " (" + id + ")", true);
+                idF.setText("");
+                nameF.setText("");
+            } catch (SQLException ex) {
+                say(msg, "❌ Registration failed. This ID may already exist.", false);
+            }
+        });
+
+        JPanel wrap = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        wrap.setOpaque(false);
+        wrap.add(card);
+        p.add(wrap, BorderLayout.CENTER);
+        return p;
+    }
+
+    private static Page studentMenu() {
+        RoundedButton refresh = new RoundedButton("⟳  Refresh", ORANGE, Color.WHITE);
+        Page p = page("Menu & Stock", "Live availability from the canteen kitchen.", refresh);
+
+        DefaultTableModel m = model("Item ID", "Item Name", "Price (Rs)", "Stock Available");
+        JTable t = table(m, ORANGE);
+        JLabel err = label(" ", B, 13, RED);
+        Card card = new Card(new BorderLayout(0, 10));
+        card.add(err, BorderLayout.NORTH);
+        card.add(scroll(t), BorderLayout.CENTER);
+        p.add(card, BorderLayout.CENTER);
+
+        Runnable load = () -> {
+            boolean ok = loadMenu(m);
+            err.setText(ok ? " " : "❌ Couldn't load the menu. Ask staff to load the default menu first.");
+        };
+        refresh.addActionListener(e -> load.run());
+        p.onShow = load;
+        return p;
+    }
+
+    private static Page studentOrder() {
+        Page p = page("Pre-order Food", "Pick items, set quantity, and get your token.", null);
+
+        List<CartLine> cart = new ArrayList<>();
+        DefaultTableModel menuM = model("Item ID", "Item Name", "Price (Rs)", "Stock Available");
+        JTable menuT = table(menuM, ORANGE);
+        DefaultTableModel cartM = model("Item", "Qty", "Subtotal (Rs)");
+        JTable cartT = table(cartM, ORANGE);
+
+        JSpinner qty = new JSpinner(new SpinnerNumberModel(1, 1, 50, 1));
+        qty.setFont(font(P, 14));
+        RoundedButton add = new RoundedButton("＋  Add to cart", ORANGE, Color.WHITE);
+        JLabel total = label("Total: Rs. 0.00", B, 20, TEXT);
+        JTextField sid = input();
+        RoundedButton remove = new RoundedButton("Remove selected", new Color(0x6B7280), Color.WHITE);
+        RoundedButton place = new RoundedButton("Place order", ORANGE, Color.WHITE);
+
+        Runnable rebuild = () -> {
+            cartM.setRowCount(0);
+            double sum = 0;
+            for (CartLine l : cart) {
+                cartM.addRow(new Object[]{l.name, l.qty, money(l.price * l.qty)});
+                sum += l.price * l.qty;
+            }
+            total.setText("Total: Rs. " + money(sum));
+        };
+
+        // Left: menu
+        Card left = new Card(new BorderLayout(0, 12));
+        left.add(label("Choose from the menu", B, 16, TEXT), BorderLayout.NORTH);
+        left.add(scroll(menuT), BorderLayout.CENTER);
+        JPanel addBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        addBar.setOpaque(false);
+        addBar.add(label("Quantity", B, 13, MUTED));
+        addBar.add(qty);
+        addBar.add(add);
+        left.add(addBar, BorderLayout.SOUTH);
+
+        // Right: cart
+        Card right = new Card(new BorderLayout(0, 12));
+        right.setPreferredSize(new Dimension(440, 0));
+        JPanel top = new JPanel();
+        top.setOpaque(false);
+        top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
+        JLabel cartTitle = label("Your cart", B, 16, TEXT);
+        cartTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
+        cartTitle.setBorder(pad(0, 0, 12, 0));
+        top.add(cartTitle);
+        top.add(caption("Student ID"));
+        top.add(sid);
+        right.add(top, BorderLayout.NORTH);
+        right.add(scroll(cartT), BorderLayout.CENTER);
+        JPanel bottom = new JPanel(new BorderLayout(0, 12));
+        bottom.setOpaque(false);
+        bottom.add(total, BorderLayout.NORTH);
+        JPanel btns = new JPanel(new GridLayout(1, 2, 10, 0));
+        btns.setOpaque(false);
+        btns.add(remove);
+        btns.add(place);
+        bottom.add(btns, BorderLayout.SOUTH);
+        right.add(bottom, BorderLayout.SOUTH);
+
+        JPanel body = new JPanel(new BorderLayout(18, 0));
+        body.setOpaque(false);
+        body.add(left, BorderLayout.CENTER);
+        body.add(right, BorderLayout.EAST);
+        p.add(body, BorderLayout.CENTER);
+
+        add.addActionListener(e -> {
+            int row = menuT.getSelectedRow();
+            if (row < 0) { warn("Select an item from the menu first."); return; }
+            int mr = menuT.convertRowIndexToModel(row);
+            String id = (String) menuM.getValueAt(mr, 0);
+            String name = (String) menuM.getValueAt(mr, 1);
+            double price = Double.parseDouble((String) menuM.getValueAt(mr, 2));
+            int stock;
+            try { stock = Integer.parseInt((String) menuM.getValueAt(mr, 3)); } catch (NumberFormatException ex) { stock = 0; }
+            if (stock <= 0) { warn("Sorry, " + name + " is out of stock."); return; }
+
+            int q = (Integer) qty.getValue();
+            CartLine existing = null;
+            for (CartLine l : cart) if (l.id.equals(id)) existing = l;
+            int inCart = existing == null ? 0 : existing.qty;
+            if (q + inCart > stock) { warn("Not enough stock. Available: " + stock); return; }
+
+            if (existing == null) cart.add(new CartLine(id, name, price, q));
+            else existing.qty += q;
+            rebuild.run();
+            qty.setValue(1);
+        });
+
+        remove.addActionListener(e -> {
+            int row = cartT.getSelectedRow();
+            if (row < 0) { warn("Select a cart row to remove."); return; }
+            cart.remove(cartT.convertRowIndexToModel(row));
+            rebuild.run();
+        });
+
+        place.addActionListener(e -> {
+            String studentId = sid.getText().trim();
+            if (studentId.isEmpty()) { warn("Enter your registered Student ID."); return; }
+            if (cart.isEmpty()) { warn("Your cart is empty."); return; }
+
+            String oId = "TKN-" + (int) (Math.random() * 9000 + 1000);
+            double sum = 0;
+            for (CartLine l : cart) sum += l.price * l.qty;
+            String items = cart.stream().map(l -> l.name + " x" + l.qty).collect(Collectors.joining(", "));
+
+            try (Connection conn = db()) {
+                conn.setAutoCommit(false);
+                try {
+                    try (PreparedStatement us = conn.prepareStatement(
+                            "UPDATE MenuItems SET stock = stock - ? WHERE itemId = ? AND stock >= ?")) {
+                        for (CartLine l : cart) {
+                            us.setInt(1, l.qty);
+                            us.setString(2, l.id);
+                            us.setInt(3, l.qty);
+                            if (us.executeUpdate() == 0) throw new SQLException("Not enough stock for " + l.name);
+                        }
+                    }
+                    try (PreparedStatement os = conn.prepareStatement(
+                            "INSERT INTO Orders (orderId, userId, status) VALUES (?, ?, 'Pending')")) {
+                        os.setString(1, oId);
+                        os.setString(2, studentId);
+                        os.executeUpdate();
+                    }
+                    conn.commit();
+                } catch (SQLException ex) {
+                    conn.rollback();
+                    throw ex;
+                }
+            } catch (SQLException ex) {
+                JOptionPane.showMessageDialog(null, "Order failed. Check your Student ID and stock.",
+                        "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            JTextArea receipt = new JTextArea(
+                    "  ==============================\n"
+                            + "        QUICKBITE RECEIPT\n"
+                            + "  ==============================\n"
+                            + "  Token ID : " + oId + "\n"
+                            + "  Items    : " + items + "\n"
+                            + "  Total    : Rs. " + money(sum) + "\n"
+                            + "  ==============================\n"
+                            + "  Preparing... ready in about 40s");
+            receipt.setEditable(false);
+            receipt.setLineWrap(true);
+            receipt.setWrapStyleWord(true);
+            receipt.setFont(new Font("Consolas", B, 14));
+            receipt.setBorder(pad(10, 10, 10, 10));
+            receipt.setPreferredSize(new Dimension(420, 190));
+            JOptionPane.showMessageDialog(null, receipt, "Order placed ✅", JOptionPane.PLAIN_MESSAGE);
+
+            new OrderProcessor(oId, 40000).start();
+            cart.clear();
+            rebuild.run();
+            loadMenu(menuM);
+        });
+
+        p.onShow = () -> loadMenu(menuM);
+        return p;
+    }
+
+    private static Page studentTrack() {
+        Page p = page("Track Token", "Check if your order is ready to collect.", null);
+        Card card = new Card(null);
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setPreferredSize(new Dimension(460, 320));
+
+        JTextField tokenF = input();
+        RoundedButton btn = new RoundedButton("Track status", ORANGE, Color.WHITE);
+        btn.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel badge = new JLabel(" ");
+        badge.setOpaque(true);
+        badge.setFont(font(B, 15));
+        badge.setForeground(Color.WHITE);
+        badge.setBorder(pad(12, 18, 12, 18));
+        badge.setAlignmentX(Component.LEFT_ALIGNMENT);
+        badge.setVisible(false);
+
+        card.add(caption("Token ID (e.g. TKN-1234)"));
+        card.add(tokenF);
+        card.add(Box.createVerticalStrut(20));
+        card.add(btn);
+        card.add(Box.createVerticalStrut(22));
+        card.add(badge);
+
+        btn.addActionListener(e -> {
+            String tId = tokenF.getText().trim();
+            if (tId.isEmpty()) return;
+            try (Connection conn = db();
+                 PreparedStatement ps = conn.prepareStatement("SELECT status FROM Orders WHERE orderId = ?")) {
+                ps.setString(1, tId);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    String st = rs.getString("status");
+                    if (st.equals("Ready")) { badge.setBackground(GREEN); badge.setText("✅  " + tId + " is ready. Please collect your food."); }
+                    else if (st.equals("Pending")) { badge.setBackground(AMBER); badge.setText("⏳  " + tId + " is being prepared..."); }
+                    else { badge.setBackground(MUTED); badge.setText(tId + ": " + st); }
+                } else {
+                    badge.setBackground(RED);
+                    badge.setText("❌  Token not found. Check the ID and try again.");
+                }
+            } catch (SQLException ex) {
+                badge.setBackground(RED);
+                badge.setText("❌  Couldn't reach the database.");
+            }
+            badge.setVisible(true);
+            card.revalidate();
+            card.repaint();
+        });
+
+        JPanel wrap = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        wrap.setOpaque(false);
+        wrap.add(card);
+        p.add(wrap, BorderLayout.CENTER);
+        return p;
+    }
+
+    /* ===================== STAFF DASHBOARD ===================== */
+    private static void openStaffDashboard() {
+        Page[] pages = {staffPending(), staffSetup(), staffAnalytics()};
+        openShell("Staff Dashboard - QuickBite", "Kitchen & admin", INDIGO,
+                new String[]{"📋  Pending Orders", "⚙️  Setup Menu & Stock", "📊  Sales Analytics"}, pages);
+    }
+
+    private static Page staffPending() {
+        RoundedButton refresh = new RoundedButton("⟳  Refresh", INDIGO, Color.WHITE);
+        Page p = page("Pending Orders", "Orders waiting in the kitchen queue. Updates every 5 seconds.", refresh);
+
+        DefaultTableModel m = model("Token ID", "Student ID", "Status");
+        JTable t = table(m, INDIGO);
+        JLabel info = label(" ", B, 13, MUTED);
+        Card card = new Card(new BorderLayout(0, 10));
+        card.add(info, BorderLayout.NORTH);
+        card.add(scroll(t), BorderLayout.CENTER);
+        p.add(card, BorderLayout.CENTER);
+
+        Runnable load = () -> {
+            m.setRowCount(0);
+            try (Connection c = db(); Statement s = c.createStatement();
+                 ResultSet rs = s.executeQuery("SELECT * FROM Orders WHERE status = 'Pending'")) {
+                while (rs.next()) m.addRow(new Object[]{rs.getString("orderId"), rs.getString("userId"), rs.getString("status")});
+                info.setForeground(MUTED);
+                info.setText(m.getRowCount() == 0 ? "✅ No pending orders. The kitchen is clear." : m.getRowCount() + " pending order(s)");
+            } catch (SQLException ex) {
+                info.setForeground(RED);
+                info.setText("❌ Error fetching orders.");
+            }
+        };
+        refresh.addActionListener(e -> load.run());
+        javax.swing.Timer auto = new javax.swing.Timer(5000, e -> { if (p.isShowing()) load.run(); });
+        auto.start();
+        p.onShow = load;
+        return p;
+    }
+
+    private static Page staffSetup() {
+        Page p = page("Setup Menu & Stock", "Load the default menu and reset inventory.", null);
+
+        Card action = new Card(new BorderLayout(20, 0));
+        action.add(new JLabel("<html><div style='font-family:Segoe UI'><b style='font-size:14px'>Load default menu</b><br>"
+                        + "<span style='color:#6B7280'>Replaces the current menu and resets stock for all 10 items.</span></div></html>"),
+                BorderLayout.CENTER);
+        RoundedButton load = new RoundedButton("⚙️  Load default menu", INDIGO, Color.WHITE);
+        action.add(load, BorderLayout.EAST);
+
+        DefaultTableModel m = model("Item ID", "Item Name", "Price (Rs)", "Stock Available");
+        JTable t = table(m, INDIGO);
+        JLabel msg = label(" ", B, 13, GREEN);
+        Card tableCard = new Card(new BorderLayout(0, 10));
+        tableCard.add(msg, BorderLayout.NORTH);
+        tableCard.add(scroll(t), BorderLayout.CENTER);
+
+        JPanel body = new JPanel(new BorderLayout(0, 18));
+        body.setOpaque(false);
+        body.add(action, BorderLayout.NORTH);
+        body.add(tableCard, BorderLayout.CENTER);
+        p.add(body, BorderLayout.CENTER);
+
+        load.addActionListener(e -> {
+            int ok = JOptionPane.showConfirmDialog(null, "This resets the menu, all stock levels, and clears old pending orders. Continue?",
+                    "Confirm reset", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (ok != JOptionPane.YES_OPTION) return;
+            try (Connection conn = db(); Statement stmt = conn.createStatement()) {
+                stmt.executeUpdate("DROP TABLE IF EXISTS MenuItems");
+                stmt.executeUpdate("CREATE TABLE MenuItems (itemId VARCHAR(10) PRIMARY KEY, name VARCHAR(50), price DOUBLE, stock INT)");
+
+                // Clear old orders so pending order list becomes clean
+                stmt.executeUpdate("CREATE TABLE IF NOT EXISTS Orders (orderId VARCHAR(20) PRIMARY KEY, userId VARCHAR(20), status VARCHAR(20))");
+                stmt.executeUpdate("DELETE FROM Orders");
+
+                Object[][] items = {
+                        {"M01", "Chicken Biriyani", 120.0, 15}, {"M02", "Meals", 100.0, 20},
+                        {"M03", "Chicken Fry", 100.0, 10}, {"M04", "Tea", 12.0, 50},
+                        {"M05", "Black Tea", 10.0, 50}, {"M06", "Puffs", 20.0, 5},
+                        {"M07", "Lime Juice", 15.0, 30}, {"M08", "Coffee", 15.0, 40},
+                        {"M09", "Samosa", 15.0, 2}, {"M10", "Masala Dosa", 60.0, 10}
+                };
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "INSERT INTO MenuItems (itemId, name, price, stock) VALUES (?, ?, ?, ?)")) {
+                    for (Object[] it : items) {
+                        ps.setString(1, (String) it[0]);
+                        ps.setString(2, (String) it[1]);
+                        ps.setDouble(3, (Double) it[2]);
+                        ps.setInt(4, (Integer) it[3]);
+                        ps.executeUpdate();
+                    }
+                }
+                loadMenu(m);
+                say(msg, "✅ Default menu, stock, and order history reset successfully.", true);
+            } catch (SQLException ex) {
+                say(msg, "❌ Error loading menu: " + ex.getMessage(), false);
+            }
+        });
+
+        p.onShow = () -> { if (loadMenu(m)) msg.setText(" "); };
+        return p;
+    }
+
+    private static Page staffAnalytics() {
+        Page p = page("Sales Analytics", "Order totals and current stock levels.", null);
+
+        MetricCard total = new MetricCard("Total orders", "-", INDIGO);
+        MetricCard pending = new MetricCard("Pending", "-", AMBER);
+        MetricCard ready = new MetricCard("Ready", "-", GREEN);
+        JPanel cards = row(3);
+        cards.add(total);
+        cards.add(pending);
+        cards.add(ready);
+
+        BarChart chart = new BarChart(INDIGO);
+        Card chartCard = new Card(new BorderLayout(0, 12));
+        chartCard.add(label("Stock levels (red = 5 or fewer left)", B, 16, TEXT), BorderLayout.NORTH);
+        chartCard.add(scroll(chart), BorderLayout.CENTER);
+
+        JPanel body = new JPanel(new BorderLayout(0, 20));
+        body.setOpaque(false);
+        body.add(cards, BorderLayout.NORTH);
+        body.add(chartCard, BorderLayout.CENTER);
+        p.add(body, BorderLayout.CENTER);
+
+        p.onShow = () -> {
+            total.value.setText(count("SELECT COUNT(*) FROM Orders"));
+            pending.value.setText(count("SELECT COUNT(*) FROM Orders WHERE status = 'Pending'"));
+            ready.value.setText(count("SELECT COUNT(*) FROM Orders WHERE status = 'Ready'"));
+            List<String> names = new ArrayList<>();
+            List<Integer> vals = new ArrayList<>();
+            try (Connection c = db(); Statement s = c.createStatement();
+                 ResultSet rs = s.executeQuery("SELECT name, stock FROM MenuItems")) {
+                while (rs.next()) {
+                    names.add(rs.getString("name"));
+                    vals.add(rs.getInt("stock"));
+                }
+            } catch (SQLException ex) {
+                // leave chart empty
+            }
+            chart.setData(names, vals);
+        };
+        return p;
+    }
+}
